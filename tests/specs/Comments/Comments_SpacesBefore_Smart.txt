@@ -52,3 +52,69 @@ key1 = "val" # key comment
 [expect]
 [section1] # section comment
 key1 = "val" # key comment
+
+== should align comments in arrays ==
+items = [
+  1, # short
+  100, # medium
+  10000, # long
+]
+
+[expect]
+items = [
+  1,     # short
+  100,   # medium
+  10000, # long
+]
+
+== should separate array groups by blank lines ==
+ids = [
+  1, # group a
+  22, # group a
+
+  333, # group b
+  4444, # group b
+]
+
+[expect]
+ids = [
+  1,  # group a
+  22, # group a
+
+  333,  # group b
+  4444, # group b
+]
+
+== should separate array groups by standalone comments ==
+ids = [
+  # Section 1
+  1, # one
+  22, # two
+  # Section 2
+  333, # three
+  4444, # four
+]
+
+[expect]
+ids = [
+  # Section 1
+  1,  # one
+  22, # two
+  # Section 2
+  333,  # three
+  4444, # four
+]
+
+== should handle array elements without trailing comments ==
+ids = [
+  1,
+  22, # only this
+  333,
+]
+
+[expect]
+ids = [
+  1,
+  22, # only this
+  333,
+]

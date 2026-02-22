@@ -397,6 +397,13 @@ fn gen_trailing_comment<'a>(element: SyntaxElement, context: &mut Context<'a>) -
 fn compute_smart_comment_alignment(root: &SyntaxNode, _text: &str, min_spaces: u32, context: &mut Context) {
   // Process root-level entries and entries within table sections
   compute_alignment_for_children(root, min_spaces, context);
+
+  // Process array elements for comment alignment (at any nesting depth)
+  for node in root.descendants() {
+    if node.kind() == SyntaxKind::ARRAY {
+      compute_alignment_for_array(&node, min_spaces, context);
+    }
+  }
 }
 
 /// Information about an entry and its trailing comment for alignment purposes.
@@ -475,6 +482,71 @@ fn flush_alignment_group(group: &mut Vec<EntryCommentInfo>, min_spaces: u32, con
   }
 
   group.clear();
+}
+
+/// Compute comment alignment for elements within a multi-line array.
+///
+/// Groups consecutive array values (separated by blank lines or standalone comments)
+/// and aligns their trailing comments based on value width.
+fn compute_alignment_for_array(array_node: &SyntaxNode, min_spaces: u32, context: &mut Context) {
+  let mut current_group: Vec<EntryCommentInfo> = Vec::new();
+  let mut had_group_break = false;
+  let mut pending_value: Option<SyntaxNode> = None;
+  let mut after_comma = false;
+  let mut found_newline = false;
+
+  for element in array_node.children_with_tokens() {
+    match &element {
+      NodeOrToken::Token(token) => match token.kind() {
+        SyntaxKind::NEWLINE => {
+          if found_newline || token.newline_count() > 1 {
+            had_group_break = true;
+          }
+          found_newline = true;
+          after_comma = false;
+        }
+        SyntaxKind::COMMA => {
+          after_comma = true;
+          found_newline = false;
+        }
+        SyntaxKind::COMMENT => {
+          if after_comma && pending_value.is_some() {
+            // Trailing comment for the pending value
+            if had_group_break {
+              flush_alignment_group(&mut current_group, min_spaces, context);
+              had_group_break = false;
+            }
+            let value = pending_value.take().unwrap();
+            let value_width = value.text().to_string().trim().len();
+            let comment_pos: usize = token.text_range().start().into();
+            current_group.push(EntryCommentInfo {
+              code_width: value_width + 1, // +1 for comma
+              comment_pos,
+            });
+            after_comma = false;
+          } else {
+            // Standalone comment — acts as group separator
+            flush_alignment_group(&mut current_group, min_spaces, context);
+            had_group_break = false;
+          }
+          found_newline = false;
+        }
+        SyntaxKind::WHITESPACE => {} // skip
+        _ => {
+          found_newline = false;
+        }
+      },
+      NodeOrToken::Node(child) => {
+        if child.kind() == SyntaxKind::VALUE {
+          pending_value = Some(child.clone());
+          after_comma = false;
+          found_newline = false;
+        }
+      }
+    }
+  }
+
+  flush_alignment_group(&mut current_group, min_spaces, context);
 }
 
 /// Compute the formatted width of a TOML entry (key = value).
