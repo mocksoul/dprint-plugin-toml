@@ -1,0 +1,34 @@
+~~ comment.spacesBefore: 2 ~~
+== should add fixed spaces before trailing comments ==
+key = "value" # comment
+longer_key = "longer value" # another comment
+
+[expect]
+key = "value"  # comment
+longer_key = "longer value"  # another comment
+
+== should not affect standalone comments ==
+# standalone comment
+key = "value"
+
+[expect]
+# standalone comment
+key = "value"
+
+== should handle entries without trailing comments ==
+key1 = "value1" # with comment
+key2 = "value2"
+key3 = "value3" # with comment
+
+[expect]
+key1 = "value1"  # with comment
+key2 = "value2"
+key3 = "value3"  # with comment
+
+== should handle table headers with trailing comments ==
+[section] # section comment
+key = "value" # key comment
+
+[expect]
+[section]  # section comment
+key = "value"  # key comment

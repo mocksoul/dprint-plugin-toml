@@ -76,6 +76,26 @@ impl ConfigurationBuilder {
     self.insert("comment.forceLeadingSpace", value.into())
   }
 
+  /// Controls spacing before trailing comments.
+  ///
+  /// Accepts:
+  /// - `false` (default): don't modify spacing (upstream behavior, 1 space)
+  /// - a positive integer: fixed number of spaces before trailing comments
+  /// - `"smart"`: align trailing comments within consecutive entry groups (min 1 space)
+  ///
+  /// For smart mode with custom minimum, use `comment_spaces_before_smart`.
+  pub fn comment_spaces_before(&mut self, value: i32) -> &mut Self {
+    self.insert("comment.spacesBefore", value.into())
+  }
+
+  /// Enable smart trailing comment alignment with a custom minimum spacing.
+  pub fn comment_spaces_before_smart(&mut self, min: i32) -> &mut Self {
+    let mut obj = ConfigKeyMap::new();
+    obj.insert("smart".to_string(), ConfigKeyValue::Bool(true));
+    obj.insert("min".to_string(), ConfigKeyValue::Number(min));
+    self.insert("comment.spacesBefore", ConfigKeyValue::Object(obj))
+  }
+
   /// Whether to apply sorting to a Cargo.toml file.
   /// Default: `true`
   pub fn cargo_apply_conventions(&mut self, value: bool) -> &mut Self {
@@ -110,10 +130,11 @@ mod tests {
       .indent_width(4)
       .new_line_kind(NewLineKind::CarriageReturnLineFeed)
       .comment_force_leading_space(false)
+      .comment_spaces_before(2)
       .cargo_apply_conventions(false);
 
     let inner_config = config.get_inner_config();
-    assert_eq!(inner_config.len(), 6);
+    assert_eq!(inner_config.len(), 7);
     let diagnostics = resolve_config(inner_config, &Default::default()).diagnostics;
     assert_eq!(diagnostics.len(), 0);
   }

@@ -1,3 +1,4 @@
+use super::configuration::CommentSpacesBefore;
 use super::Configuration;
 use dprint_core::configuration::*;
 
@@ -28,6 +29,9 @@ pub fn resolve_config(config: ConfigKeyMap, global_config: &GlobalConfiguration)
   let mut diagnostics = Vec::new();
   let mut config = config;
 
+  // Manually extract comment.spacesBefore since it accepts multiple types
+  let comment_spaces_before = resolve_comment_spaces_before(&mut config, &mut diagnostics);
+
   let resolved_config = Configuration {
     line_width: get_value(
       &mut config,
@@ -49,6 +53,7 @@ pub fn resolve_config(config: ConfigKeyMap, global_config: &GlobalConfiguration)
       &mut diagnostics,
     ),
     comment_force_leading_space: get_value(&mut config, "comment.forceLeadingSpace", true, &mut diagnostics),
+    comment_spaces_before,
     cargo_apply_conventions: get_value(&mut config, "cargo.applyConventions", true, &mut diagnostics),
   };
 
@@ -57,5 +62,53 @@ pub fn resolve_config(config: ConfigKeyMap, global_config: &GlobalConfiguration)
   ResolveConfigurationResult {
     config: resolved_config,
     diagnostics,
+  }
+}
+
+fn resolve_comment_spaces_before(config: &mut ConfigKeyMap, diagnostics: &mut Vec<ConfigurationDiagnostic>) -> CommentSpacesBefore {
+  let key = "comment.spacesBefore";
+  match config.shift_remove(key) {
+    None => CommentSpacesBefore::Disabled,
+    Some(ConfigKeyValue::Bool(false)) | Some(ConfigKeyValue::Null) => CommentSpacesBefore::Disabled,
+    Some(ConfigKeyValue::Bool(true)) => {
+      diagnostics.push(ConfigurationDiagnostic {
+        property_name: key.to_string(),
+        message: "Use a number or \"smart\" instead of true".to_string(),
+      });
+      CommentSpacesBefore::Disabled
+    }
+    Some(ConfigKeyValue::Number(n)) if n >= 1 => CommentSpacesBefore::Fixed(n as u32),
+    Some(ConfigKeyValue::Number(n)) => {
+      diagnostics.push(ConfigurationDiagnostic {
+        property_name: key.to_string(),
+        message: format!("Expected a positive number, got {}", n),
+      });
+      CommentSpacesBefore::Disabled
+    }
+    Some(ConfigKeyValue::String(ref s)) if s == "smart" => CommentSpacesBefore::Smart { min: 1 },
+    Some(ConfigKeyValue::String(s)) => {
+      diagnostics.push(ConfigurationDiagnostic {
+        property_name: key.to_string(),
+        message: format!("Expected false, a number, or \"smart\", got \"{}\"", s),
+      });
+      CommentSpacesBefore::Disabled
+    }
+    Some(ConfigKeyValue::Object(obj)) => {
+      let min = obj
+        .get("min")
+        .and_then(|v| match v {
+          ConfigKeyValue::Number(n) => Some(*n as u32),
+          _ => None,
+        })
+        .unwrap_or(1);
+      CommentSpacesBefore::Smart { min }
+    }
+    Some(ConfigKeyValue::Array(_)) => {
+      diagnostics.push(ConfigurationDiagnostic {
+        property_name: key.to_string(),
+        message: "Expected false, a number, or \"smart\"".to_string(),
+      });
+      CommentSpacesBefore::Disabled
+    }
   }
 }

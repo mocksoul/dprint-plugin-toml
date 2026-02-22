@@ -1,0 +1,54 @@
+~~ comment.spacesBefore: smart ~~
+== should align trailing comments in a group ==
+a = 1 # short key
+longer_key = "hello" # longer key
+
+[expect]
+a = 1                # short key
+longer_key = "hello" # longer key
+
+== should separate groups by blank lines ==
+a = 1 # group 1
+b = "hello" # group 1
+
+c = true # group 2
+de = "world" # group 2
+
+[expect]
+a = 1       # group 1
+b = "hello" # group 1
+
+c = true     # group 2
+de = "world" # group 2
+
+== should handle single entry with comment ==
+only_entry = "value" # just one
+
+[expect]
+only_entry = "value" # just one
+
+== should not affect standalone comments ==
+# standalone
+a = 1 # inline
+
+[expect]
+# standalone
+a = 1 # inline
+
+== should handle mixed entries with and without comments ==
+a = 1 # comment a
+b = "hello"
+c = true # comment c
+
+[expect]
+a = 1    # comment a
+b = "hello"
+c = true # comment c
+
+== should handle table headers breaking groups ==
+[section1] # section comment
+key1 = "val" # key comment
+
+[expect]
+[section1] # section comment
+key1 = "val" # key comment

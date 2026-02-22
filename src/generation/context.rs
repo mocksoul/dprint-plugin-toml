@@ -1,10 +1,14 @@
 use crate::configuration::Configuration;
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 pub struct Context<'a> {
   pub config: &'a Configuration,
   pub text: &'a str,
   handled_comments: HashSet<usize>,
+  /// Maps comment source position → number of spaces to insert before it.
+  /// Used by Smart alignment mode.
+  comment_spaces: HashMap<usize, usize>,
 }
 
 impl<'a> Context<'a> {
@@ -13,6 +17,7 @@ impl<'a> Context<'a> {
       config,
       text,
       handled_comments: HashSet::new(),
+      comment_spaces: HashMap::new(),
     }
   }
 
@@ -22,6 +27,16 @@ impl<'a> Context<'a> {
 
   pub fn add_handled_comment(&mut self, pos: usize) {
     self.handled_comments.insert(pos);
+  }
+
+  /// Get the pre-computed number of spaces before a trailing comment (smart mode).
+  pub fn get_comment_spaces(&self, pos: usize) -> Option<usize> {
+    self.comment_spaces.get(&pos).copied()
+  }
+
+  /// Set the pre-computed number of spaces before a trailing comment.
+  pub fn set_comment_spaces(&mut self, pos: usize, spaces: usize) {
+    self.comment_spaces.insert(pos, spaces);
   }
 
   pub fn get_line_number_at_pos(&self, pos: usize) -> usize {

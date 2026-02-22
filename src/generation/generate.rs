@@ -13,6 +13,7 @@ use taplo::syntax::SyntaxNode;
 use taplo::syntax::SyntaxToken;
 
 use super::Context;
+use crate::configuration::CommentSpacesBefore;
 use crate::configuration::Configuration;
 use crate::rowan_extensions::*;
 
@@ -20,6 +21,12 @@ type PrintItemsResult = Result<PrintItems, ()>;
 
 pub fn generate(node: SyntaxNode, text: &str, config: &Configuration) -> PrintItems {
   let mut context = Context::new(text, config);
+
+  // Pre-compute comment alignment for smart mode
+  if let CommentSpacesBefore::Smart { min } = &config.comment_spaces_before {
+    compute_smart_comment_alignment(&node, text, *min, &mut context);
+  }
+
   let mut items = gen_node(node.into(), &mut context);
   items.push_condition(if_true(
     "endOfFileNewLine",
@@ -382,8 +389,176 @@ fn gen_trailing_comment<'a>(element: SyntaxElement, context: &mut Context<'a>) -
   }
 }
 
+/// Pre-compute alignment targets for trailing comments in "smart" mode.
+///
+/// Groups consecutive entries (not separated by blank lines) and computes
+/// the formatted code width for each. Within each group, trailing comments
+/// are aligned to `max_code_width + min_spaces`.
+fn compute_smart_comment_alignment(root: &SyntaxNode, _text: &str, min_spaces: u32, context: &mut Context) {
+  // Process root-level entries and entries within table sections
+  compute_alignment_for_children(root, min_spaces, context);
+}
+
+/// Information about an entry and its trailing comment for alignment purposes.
+struct EntryCommentInfo {
+  /// Formatted width of the code portion (key + " = " + value).
+  code_width: usize,
+  /// Source position of the trailing comment token.
+  comment_pos: usize,
+}
+
+/// Compute alignment for direct children of a node (ROOT or table body).
+fn compute_alignment_for_children(node: &SyntaxNode, min_spaces: u32, context: &mut Context) {
+  let mut current_group: Vec<EntryCommentInfo> = Vec::new();
+  let mut had_blank_line = false;
+
+  for element in node.children_with_tokens() {
+    match &element {
+      NodeOrToken::Token(token) => {
+        if token.kind() == SyntaxKind::NEWLINE && token.newline_count() > 1 {
+          had_blank_line = true;
+        }
+      }
+      NodeOrToken::Node(child) => match child.kind() {
+        SyntaxKind::ENTRY => {
+          if had_blank_line {
+            flush_alignment_group(&mut current_group, min_spaces, context);
+            had_blank_line = false;
+          }
+
+          // Check for trailing comment on this entry
+          if let Some(comment_token) = find_trailing_comment_token(&element) {
+            let code_width = compute_entry_formatted_width(child);
+            let comment_pos: usize = comment_token.text_range().start().into();
+            current_group.push(EntryCommentInfo { code_width, comment_pos });
+          }
+        }
+        SyntaxKind::TABLE_HEADER | SyntaxKind::TABLE_ARRAY_HEADER => {
+          // Table headers break entry groups but don't participate in alignment.
+          // They get min_spaces independently.
+          flush_alignment_group(&mut current_group, min_spaces, context);
+          had_blank_line = false;
+
+          if let Some(comment_token) = find_trailing_comment_token(&element) {
+            let comment_pos: usize = comment_token.text_range().start().into();
+            context.set_comment_spaces(comment_pos, min_spaces as usize);
+          }
+        }
+        _ => {
+          flush_alignment_group(&mut current_group, min_spaces, context);
+          had_blank_line = false;
+        }
+      },
+    }
+  }
+
+  flush_alignment_group(&mut current_group, min_spaces, context);
+}
+
+/// Flush a group of entries by computing alignment targets and storing them in context.
+fn flush_alignment_group(group: &mut Vec<EntryCommentInfo>, min_spaces: u32, context: &mut Context) {
+  if group.len() < 2 {
+    // Single entry doesn't need alignment — just use min_spaces
+    if let Some(entry) = group.first() {
+      context.set_comment_spaces(entry.comment_pos, min_spaces as usize);
+    }
+    group.clear();
+    return;
+  }
+
+  let max_code_width = group.iter().map(|e| e.code_width).max().unwrap_or(0);
+  let target_column = max_code_width + min_spaces as usize;
+
+  for entry in group.iter() {
+    let spaces = target_column.saturating_sub(entry.code_width).max(min_spaces as usize);
+    context.set_comment_spaces(entry.comment_pos, spaces);
+  }
+
+  group.clear();
+}
+
+/// Compute the formatted width of a TOML entry (key = value).
+fn compute_entry_formatted_width(entry: &SyntaxNode) -> usize {
+  let key_width = entry
+    .children()
+    .find(|c| c.kind() == SyntaxKind::KEY)
+    .map(|k| k.text().to_string().trim().len())
+    .unwrap_or(0);
+  let value_width = entry
+    .children()
+    .find(|c| c.kind() == SyntaxKind::VALUE)
+    .map(|v| compute_value_width(&v))
+    .unwrap_or(0);
+
+  // "key = value" → key.len() + 3 + value.len()
+  key_width + 3 + value_width
+}
+
+/// Compute the formatted width of a value node (excluding trailing comments).
+fn compute_value_width(value: &SyntaxNode) -> usize {
+  let mut width = 0;
+  for child in value.children_with_tokens() {
+    match &child {
+      NodeOrToken::Token(token) => match token.kind() {
+        SyntaxKind::COMMENT | SyntaxKind::WHITESPACE => {}
+        _ => width += token.text().trim().len(),
+      },
+      NodeOrToken::Node(node) => {
+        // For nested nodes (arrays, inline tables), use full text
+        width += node.text().to_string().trim().len();
+      }
+    }
+  }
+  width
+}
+
+/// Find the trailing comment token within or after an element.
+///
+/// For ENTRY nodes, the comment is a child token (sibling of VALUE within ENTRY).
+/// For TABLE_HEADER / TABLE_ARRAY_HEADER, the comment is a child token too.
+/// Falls back to checking next siblings for other element types.
+fn find_trailing_comment_token(element: &SyntaxElement) -> Option<SyntaxToken> {
+  match element {
+    NodeOrToken::Node(node) => {
+      // Look for COMMENT token among node's children (scanning from the end).
+      // Comments may be nested inside VALUE nodes, so recurse into child nodes.
+      let children: Vec<_> = node.children_with_tokens().collect();
+      for child in children.into_iter().rev() {
+        match child {
+          NodeOrToken::Token(token) => match token.kind() {
+            SyntaxKind::COMMENT => return Some(token),
+            SyntaxKind::WHITESPACE => continue,
+            _ => return None,
+          },
+          NodeOrToken::Node(child_node) => {
+            // Recurse into child nodes (e.g., VALUE contains the COMMENT)
+            return find_trailing_comment_token(&child_node.into());
+          }
+        }
+      }
+      None
+    }
+    NodeOrToken::Token(_) => {
+      // Walk forward through siblings
+      let mut el = element.clone();
+      while let Some(sibling) = el.next_sibling_or_token() {
+        el = sibling.clone();
+        match sibling {
+          NodeOrToken::Token(token) => match token.kind() {
+            SyntaxKind::WHITESPACE => continue,
+            SyntaxKind::COMMENT => return Some(token),
+            _ => break,
+          },
+          NodeOrToken::Node(_) => break,
+        }
+      }
+      None
+    }
+  }
+}
+
 fn gen_comment<'a>(comment: SyntaxToken, context: &mut Context<'a>) -> PrintItems {
-  let pos = comment.text_range().start().into();
+  let pos: usize = comment.text_range().start().into();
   if context.has_handled_comment(pos) {
     return PrintItems::new();
   }
@@ -393,7 +568,32 @@ fn gen_comment<'a>(comment: SyntaxToken, context: &mut Context<'a>) -> PrintItem
   debug_assert_kind(comment.clone().into(), SyntaxKind::COMMENT);
 
   let mut items = PrintItems::new();
-  items.push_condition(if_false("spaceIfNotStartOfLine", condition_resolvers::is_start_of_line(), " ".into()));
+
+  // Determine spacing before the comment (only affects trailing/inline comments)
+  match &context.config.comment_spaces_before {
+    CommentSpacesBefore::Disabled => {
+      items.push_condition(if_false("spaceIfNotStartOfLine", condition_resolvers::is_start_of_line(), " ".into()));
+    }
+    CommentSpacesBefore::Fixed(n) => {
+      let spaces = " ".repeat(*n as usize);
+      items.push_condition(if_false("spacesIfNotStartOfLine", condition_resolvers::is_start_of_line(), spaces.into()));
+    }
+    CommentSpacesBefore::Smart { min } => {
+      if let Some(spaces) = context.get_comment_spaces(pos) {
+        let space_str = " ".repeat(spaces);
+        items.push_condition(if_false(
+          "smartSpacesIfNotStartOfLine",
+          condition_resolvers::is_start_of_line(),
+          space_str.into(),
+        ));
+      } else {
+        // Not in an alignment group — use minimum spacing
+        let spaces = " ".repeat(*min as usize);
+        items.push_condition(if_false("spaceIfNotStartOfLine", condition_resolvers::is_start_of_line(), spaces.into()));
+      }
+    }
+  }
+
   items.extend({
     if context.config.comment_force_leading_space {
       let info = get_comment_text_info(comment.text());
